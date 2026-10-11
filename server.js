@@ -12,7 +12,8 @@ let dirty=false;
 if(!SB_URL)setInterval(()=>{if(dirty){dirty=false;try{fs.writeFileSync(FILE,JSON.stringify(mem))}catch(e){console.log('erro ao gravar',e.message)}}},5000);
 const flush=()=>{if(dirty&&!SB_URL){dirty=false;try{fs.writeFileSync(FILE,JSON.stringify(mem))}catch(e){}}};
 process.on('SIGTERM',()=>{flush();process.exit(0)});
-const sbH={apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'};
+// chaves novas (sb_secret_...) vão só em apikey; chaves antigas (service_role, formato JWT) também em Authorization
+const sbH=SB_KEY.startsWith('sb_')?{apikey:SB_KEY,'Content-Type':'application/json'}:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'};
 const store={
  async get(h){
   if(!SB_URL)return mem[h]||null;
@@ -61,15 +62,27 @@ const srv=http.createServer(async(q,r)=>{
 
 /* ---------- WebSocket: jogadores no mesmo mapa ---------- */
 const wss=new WebSocketServer({server:srv,maxPayload:1024});
-let nid=1;
+let nid=1;const hist=[];
+const sendAll=(f,o)=>{const s=JSON.stringify(o);wss.clients.forEach(c=>{if(c.readyState===1&&f(c))c.send(s)})};
 wss.on('connection',ws=>{
- ws.id=nid++;ws.d={n:'Jogador',m:-1,x:0,y:0,e:'🧑‍🎤'};ws.last=0;
+ ws.id=nid++;ws.lc=0;if(hist.length)ws.send(JSON.stringify({t:'h',h:hist}));
+ ws.d={n:'Jogador',m:-1,x:0,y:0,e:'🧑‍🎤',t:[],f:1};ws.last=0;
  ws.on('message',raw=>{
   let m;try{m=JSON.parse(raw)}catch(e){return}
-  const now=Date.now();if(now-ws.last<60)return;ws.last=now;
+  const now=Date.now();
+  if(m.t==='c'){
+   const x=String(m.x||'').replace(/[\u0000-\u001f\u007f]/g,' ').trim().slice(0,120);if(!x)return;
+   if(now-ws.lc<1200){ws.send(JSON.stringify({t:'c',sys:1,ch:m.ch==='g'?'g':'m',n:'Sistema',x:'Calma! Espere um pouco para mandar outra mensagem.'}));return}
+   ws.lc=now;const g=m.ch==='g',msg={t:'c',ch:g?'g':'m',n:ws.d.n,x,i:ws.id};
+   if(g){hist.push(msg);if(hist.length>40)hist.shift();sendAll(()=>true,msg)}
+   else if(ws.d.m>=0)sendAll(c=>c.d.m===ws.d.m,msg);
+   return;
+  }
+  if(now-ws.last<30)return;ws.last=now;
   if(m.t!=='p')return;
   const d=ws.d;
   d.n=String(m.n||'Jogador').slice(0,14);d.e=String(m.e||'🧑‍🎤').slice(0,8);
+  d.t=Array.isArray(m.tm)?m.tm.slice(0,16).map(x=>String(x).slice(0,8)):[];d.f=m.f<0?-1:1;
   d.m=Number.isFinite(m.m)?m.m|0:-1;d.x=Math.max(0,Math.min(9e4,+m.x||0));d.y=Math.max(0,Math.min(9e4,+m.y||0));
  });
 });
@@ -79,9 +92,9 @@ setInterval(()=>{
  for(const k in by){
   const list=by[k];
   list.forEach(c=>{
-   const o=list.filter(x=>x!==c).slice(0,40).map(x=>({i:x.id,n:x.d.n,e:x.d.e,x:Math.round(x.d.x),y:Math.round(x.d.y)}));
+   const o=list.filter(x=>x!==c).slice(0,40).map(x=>({i:x.id,n:x.d.n,e:x.d.e,x:Math.round(x.d.x),y:Math.round(x.d.y),tm:x.d.t,f:x.d.f}));
    if(c.readyState===1)c.send(JSON.stringify({t:'s',o,tot:wss.clients.size}));
   });
  }
-},120);
+},50);
 srv.listen(PORT,()=>console.log('Servidor na porta '+PORT));
