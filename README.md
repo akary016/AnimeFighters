@@ -1,2 +1,0 @@
-# AnimeFighters
-Meu jogo
